@@ -1,0 +1,61 @@
+name: pr-review
+on:
+  push:
+    branches: [review]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  linux-llvm15:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: kit
+      - name: LLVM 15 and Python checks of the pull request head
+        shell: bash
+        run: bash kit/review/linux.sh
+      - name: Save the results
+        if: always()
+        shell: bash
+        run: |
+          cd kit
+          git config user.name "kit-check"
+          git config user.email "kit-check@users.noreply.github.com"
+          git checkout -B review-linux
+          rm -rf results-linux
+          mkdir -p results-linux
+          cp -r /tmp/review-out/. results-linux/ || true
+          git add -f results-linux
+          git commit -q -m "review linux results $GITHUB_RUN_ID" || true
+          git push -f origin review-linux || true
+  windows-warp:
+    runs-on: windows-2025
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: kit
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Build and run the WARP draws of the pull request head
+        shell: powershell
+        run: '& .\kit\review\windows.ps1'
+      - name: Save the results
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Set-Location kit
+          git config user.name "kit-check"
+          git config user.email "kit-check@users.noreply.github.com"
+          git checkout -B review-windows 2>&1 | Out-String | Write-Host
+          if (Test-Path results-windows) { Remove-Item results-windows -Recurse -Force }
+          if (Test-Path C:\review-out) { Copy-Item C:\review-out results-windows -Recurse }
+          git add -f results-windows 2>&1 | Out-String | Write-Host
+          git commit -q -m "review windows results $env:GITHUB_RUN_ID" 2>&1 | Out-String | Write-Host
+          git push -f origin review-windows 2>&1 | Out-String | Write-Host
+          exit 0
