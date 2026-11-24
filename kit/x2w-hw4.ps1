@@ -1,12 +1,12 @@
 ﻿#requires -Version 5.1
 <#
 .SYNOPSIS
-  Xbox2Windows: прогон hw4 на ноутбуке (#448, #874, #809, #768, #966).
+  Xbox2Windows: прогон hw4 на ноутбуке (#448, #874, #809, #768, #839, #966).
 .DESCRIPTION
   Работает рядом со сборкой из x2w-dev.ps1 (%USERPROFILE%\x2w-dev\src), но саму папку src не трогает:
   для прогона заводит отдельную копию исходников %USERPROFILE%\x2w-dev\hw (git worktree).
   Части (ключ -Parts, через запятую):
-    update - ставит копию hw на коммит main 72270be, собирает закреплённые SPIR-V инструменты
+    update - ставит копию hw на коммит main 45b3c5d, собирает закреплённые SPIR-V инструменты
              (tools\setup-spirv-tools.ps1) и весь проект.
     timing - #448: время pixel_aot до и после разделения draw-core (PR #1049) на одном драйвере.
              Отдельная копия исходников (git worktree): коммит до слияния и коммит слияния.
@@ -15,6 +15,8 @@
     copyq  - #874: независимая проверка COPY -> DIRECT (vm_copy_queue_check, сборка release),
              Intel и NVIDIA по 3 раза, WARP 1 раз.
     bridge - #809 и #768: мостовые SPIR-V тесты spirv_minlod* и spirv_compaction на Intel, NVIDIA и WARP.
+    f16    - #839: перевод half -> int16/uint16 из PR #1077 (pixel_aot_f16_to_int16) на Intel и NVIDIA
+             по 3 раза, WARP 1 раз.
     suite  - #966: все тесты _hardware на NVIDIA и на Intel, все тесты _warp; каждый красный тест
              повторяется ещё 2 раза.
   Всего около полутора часов, ноутбук на зарядке. Если одна часть сломается, остальные всё равно
@@ -28,14 +30,14 @@ param(
     [string]$WorkRoot = (Join-Path $env:USERPROFILE 'x2w-dev'),
     [string]$Intel = 'Intel',
     [string]$Nvidia = 'NVIDIA',
-    [string]$Commit = '72270be367e40d20d41d2d9102b8dadd0862fa4d',
+    [string]$Commit = '45b3c5d247e33c740beff7b2e207c745741091e7',
     [string]$SplitMerge = '4ad7b0a212825c8369e866b8d16228437970acf2',
-    [string]$Parts = 'update,timing,copyq,bridge,suite'
+    [string]$Parts = 'update,timing,copyq,bridge,f16,suite'
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$KitVersion = '1'
+$KitVersion = '2'
 $Src = Join-Path $WorkRoot 'src'
 $Hw = Join-Path $WorkRoot 'hw'
 $Res = Join-Path $WorkRoot 'hw4-results'
@@ -338,6 +340,11 @@ try {
         Set-Location -LiteralPath $Hw
         $cf = Invoke-Logged 'cmake' @('--preset', 'dev', ('-DINTAKE_PYTHON=' + $VenvPy)) (Join-Path $Res 'configure-dev.txt')
         Add-Line (F 'Configure (cmake --preset dev): exit {0}, {1:0} s' ($cf.Code) ($cf.Seconds))
+        $cache = Join-Path $Build 'CMakeCache.txt'
+        if (Test-Path -LiteralPath $cache) {
+            $m = [regex]::Match([IO.File]::ReadAllText($cache), '(?m)^DXC_EXECUTABLE:FILEPATH=(.*)$')
+            if ($m.Success) { Add-Line ('  DXC used by CTest: ' + $m.Groups[1].Value.Trim()) }
+        }
         foreach ($tool in @('spirv-as.exe', 'spirv-val.exe', 'spirv-cross.exe')) {
             Add-Line ('  ' + $tool + ' present: ' + (Test-Path -LiteralPath (Join-Path $SpirvBin $tool)))
         }
@@ -461,7 +468,27 @@ try {
         }
     }
 
-    # 5. #966: every hardware test on both adapters and every WARP test, reds rerun twice
+    # 5. #839: the binary16 -> int16/uint16 draw of PR #1077 on real GPUs (CI runs it on WARP only)
+    if ($PartList -contains 'f16') {
+        Write-Step 'Перевод half -> int16 (#839, PR #1077): Intel и NVIDIA по 3 раза, WARP 1 раз (около 5 минут)'
+        try {
+            Set-Location -LiteralPath $Hw
+            foreach ($a in @(@($Intel, 'intel', 'hardware', 3), @($Nvidia, 'nvidia', 'hardware', 3), @('', 'warp', 'warp', 1))) {
+                for ($i = 1; $i -le $a[3]; $i++) {
+                    Set-Adapter $a[0]
+                    $r = Invoke-Logged 'ctest' @('--preset', 'dev', '--no-tests=error', '-R', ('^pixel_aot_f16_to_int16_' + $a[2] + '$'), '-j', '1', '-V') (Join-Path $Res ('f16-' + $a[1] + '-' + $i + '.txt'))
+                    Add-Line (('f16 {0} #{1}: exit {2}; {3}; {4}; {5}' -f $a[1], $i, $r.Code, (Get-Summary $r.Text), (Get-TestTimes $r.Text), (Get-Header $r.Text)))
+                }
+            }
+            $done.Add('f16')
+        } catch {
+            Add-Line ('f16: stopped: ' + $_.Exception.Message)
+        } finally {
+            Set-Adapter ''
+        }
+    }
+
+    # 6. #966: every hardware test on both adapters and every WARP test, reds rerun twice
     if ($PartList -contains 'suite') {
         Write-Step 'Полный прогон (#966): все тесты _hardware на NVIDIA и Intel и все _warp (около часа)'
         try {
