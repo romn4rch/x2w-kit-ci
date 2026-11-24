@@ -1,0 +1,38 @@
+name: hw4-kit-check
+on:
+  push:
+    branches: [hw4]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  real:
+    runs-on: windows-2025
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: kit-repo
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Real build and real run of the hw4 kit (WARP only) under Windows PowerShell 5.1
+        shell: powershell
+        run: '& .\kit-repo\harness\hw4-real.ps1'
+      - name: Save the results
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Set-Location kit-repo
+          git config user.name "kit-check"
+          git config user.email "kit-check@users.noreply.github.com"
+          git checkout -B hw4-results 2>&1 | Out-String | Write-Host
+          if (Test-Path results-hw4) { Remove-Item results-hw4 -Recurse -Force }
+          if (Test-Path C:\x2w-check\hw4) { Copy-Item C:\x2w-check\hw4 results-hw4 -Recurse }
+          Get-ChildItem results-hw4 -Recurse -Include *.cso, *.zip | Remove-Item -Force
+          git add -f results-hw4 2>&1 | Out-String | Write-Host
+          git commit -q -m "hw4 kit-check results $env:GITHUB_RUN_ID" 2>&1 | Out-String | Write-Host
+          git push -f origin hw4-results 2>&1 | Out-String | Write-Host
+          exit 0
